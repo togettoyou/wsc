@@ -17,6 +17,9 @@ func main() {
 	ws.OnConnected = func(ws wsc.WebSocket) {
 		fmt.Println(ws.Url)
 	}
+	ws.OnConnectError = func(err error, ws wsc.WebSocket) {
+		fmt.Println(err.Error())
+	}
 	ws.OnClose = func(code int, text string, ws wsc.WebSocket) {
 		done <- true
 	}
