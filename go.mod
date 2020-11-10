@@ -1,4 +1,4 @@
-module wsc
+module github.com/togettoyou/wsc
 
 go 1.14
 
