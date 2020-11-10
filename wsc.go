@@ -1,7 +1,6 @@
 package wsc
 
 import (
-	"fmt"
 	"github.com/gorilla/websocket"
 	"github.com/jpillora/backoff"
 	"math/rand"
@@ -178,11 +177,22 @@ func (ws *WebSocket) closeAndRecConn() {
 // 主动关闭连接
 func (ws *WebSocket) Close() {
 	if ws.Conn != nil {
-		err := ws.send(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+		ws.send(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 		ws.Conn.Close()
 		ws.IsConnected = false
 		if ws.OnClose != nil {
-			ws.OnClose(websocket.CloseNormalClosure, fmt.Sprintf("%v", err), *ws)
+			ws.OnClose(websocket.CloseNormalClosure, "", *ws)
+		}
+	}
+}
+
+func (ws *WebSocket) CloseWithMsg(msg string) {
+	if ws.Conn != nil {
+		ws.send(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, msg))
+		ws.Conn.Close()
+		ws.IsConnected = false
+		if ws.OnClose != nil {
+			ws.OnClose(websocket.CloseNormalClosure, msg, *ws)
 		}
 	}
 }
