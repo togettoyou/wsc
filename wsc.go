@@ -46,8 +46,6 @@ type WebSocket struct {
 	IsConnected bool
 	// 发送消息锁
 	sendMu *sync.Mutex
-	// 接受消息锁
-	receiveMu *sync.Mutex
 }
 
 // 创建一个新的WebSocket客户端
@@ -60,7 +58,6 @@ func New(url string) WebSocket {
 		MaxRecTime:    60 * time.Second,
 		RecFactor:     1.5,
 		sendMu:        &sync.Mutex{},
-		receiveMu:     &sync.Mutex{},
 	}
 }
 
@@ -115,9 +112,7 @@ func (ws *WebSocket) Connect() {
 		})
 		go func() {
 			for {
-				ws.receiveMu.Lock()
 				messageType, message, err := ws.Conn.ReadMessage()
-				ws.receiveMu.Unlock()
 				if err != nil {
 					ws.IsConnected = false
 					if ws.OnDisconnected != nil {
