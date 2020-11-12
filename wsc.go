@@ -125,6 +125,10 @@ func (wsc *Wsc) Connect() {
 		if wsc.OnConnected != nil {
 			wsc.OnConnected()
 		}
+		// 设置支持接受的消息最大长度
+		wsc.WebSocket.Conn.SetReadLimit(wsc.Config.MaxMessageSize)
+		// 超时时间
+		wsc.WebSocket.Conn.SetWriteDeadline(time.Now().Add(wsc.Config.WriteWait))
 		// 连接关闭回调
 		defaultCloseHandler := wsc.WebSocket.Conn.CloseHandler()
 		wsc.WebSocket.Conn.SetCloseHandler(func(code int, text string) error {
@@ -188,7 +192,14 @@ func (wsc *Wsc) SendTextMessage(message string) error {
 	if wsc.Closed() {
 		return closeErr
 	}
-	return wsc.send(websocket.TextMessage, []byte(message))
+	err := wsc.send(websocket.TextMessage, []byte(message))
+	if err != nil {
+		return err
+	}
+	if wsc.OnTextMessageSent != nil {
+		wsc.OnTextMessageSent(message)
+	}
+	return nil
 }
 
 // 发送BinaryMessage消息
@@ -196,7 +207,14 @@ func (wsc *Wsc) SendBinaryMessage(data []byte) error {
 	if wsc.Closed() {
 		return closeErr
 	}
-	return wsc.send(websocket.BinaryMessage, data)
+	err := wsc.send(websocket.BinaryMessage, data)
+	if err != nil {
+		return err
+	}
+	if wsc.OnBinaryMessageSent != nil {
+		wsc.OnBinaryMessageSent(data)
+	}
+	return nil
 }
 
 // 发送消息到连接端
