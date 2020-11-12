@@ -185,12 +185,12 @@ func (wsc *Wsc) Connect() {
 	}
 }
 
-var closeErr = errors.New("connection closed")
+var CloseErr = errors.New("connection closed")
 
 // 发送TextMessage消息
 func (wsc *Wsc) SendTextMessage(message string) error {
 	if wsc.Closed() {
-		return closeErr
+		return CloseErr
 	}
 	err := wsc.send(websocket.TextMessage, []byte(message))
 	if err != nil {
@@ -205,7 +205,7 @@ func (wsc *Wsc) SendTextMessage(message string) error {
 // 发送BinaryMessage消息
 func (wsc *Wsc) SendBinaryMessage(data []byte) error {
 	if wsc.Closed() {
-		return closeErr
+		return CloseErr
 	}
 	err := wsc.send(websocket.BinaryMessage, data)
 	if err != nil {
