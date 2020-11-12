@@ -127,8 +127,6 @@ func (wsc *Wsc) Connect() {
 		}
 		// 设置支持接受的消息最大长度
 		wsc.WebSocket.Conn.SetReadLimit(wsc.Config.MaxMessageSize)
-		// 超时时间
-		wsc.WebSocket.Conn.SetWriteDeadline(time.Now().Add(wsc.Config.WriteWait))
 		// 连接关闭回调
 		defaultCloseHandler := wsc.WebSocket.Conn.CloseHandler()
 		wsc.WebSocket.Conn.SetCloseHandler(func(code int, text string) error {
@@ -221,6 +219,8 @@ func (wsc *Wsc) SendBinaryMessage(data []byte) error {
 func (wsc *Wsc) send(messageType int, data []byte) error {
 	var err error
 	wsc.WebSocket.sendMu.Lock()
+	// 超时时间
+	wsc.WebSocket.Conn.SetWriteDeadline(time.Now().Add(wsc.Config.WriteWait))
 	err = wsc.WebSocket.Conn.WriteMessage(messageType, data)
 	wsc.WebSocket.sendMu.Unlock()
 	return err
