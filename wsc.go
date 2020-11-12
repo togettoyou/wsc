@@ -1,6 +1,7 @@
 package wsc
 
 import (
+	"errors"
 	"github.com/gorilla/websocket"
 	"github.com/jpillora/backoff"
 	"math/rand"
@@ -9,126 +10,169 @@ import (
 	"time"
 )
 
-type WebSocket struct {
-	Url    string
-	Conn   *websocket.Conn
-	Dialer *websocket.Dialer
-
-	RequestHeader http.Header
-	HttpResponse  *http.Response
-
+type Wsc struct {
+	// 配置信息
+	Config *Config
+	// 底层WebSocket
+	WebSocket *WebSocket
 	// 连接成功回调
-	OnConnected func(ws WebSocket)
+	OnConnected func()
 	// 连接异常回调，在准备进行连接的过程中发生异常时触发
-	OnConnectError func(err error, ws WebSocket)
+	OnConnectError func(err error)
 	// 连接断开回调，网络异常，服务端掉线等情况时触发
-	OnDisconnected func(err error, ws WebSocket)
+	OnDisconnected func(err error)
 	// 连接关闭回调，服务端发起关闭信号或客户端主动关闭时触发
-	OnClose func(code int, text string, ws WebSocket)
+	OnClose func(code int, text string)
+
+	// 发送Text消息成功回调
+	OnTextMessageSent func(message string)
+	// 发送Binary消息成功回调
+	OnBinaryMessageSent func(data []byte)
 
 	// 接受到Ping消息回调
-	OnPingReceived func(appData string, ws WebSocket)
+	OnPingReceived func(appData string)
 	// 接受到Pong消息回调
-	OnPongReceived func(appData string, ws WebSocket)
+	OnPongReceived func(appData string)
 	// 接受到Text消息回调
-	OnTextMessage func(message string, ws WebSocket)
+	OnTextMessageReceived func(message string)
 	// 接受到Binary消息回调
-	OnBinaryMessage func(data []byte, ws WebSocket)
+	OnBinaryMessageReceived func(data []byte)
+}
 
+type Config struct {
+	// 写超时
+	WriteWait time.Duration
+	// 支持接受的消息最大长度，默认512字节
+	MaxMessageSize int64
 	// 最小重连时间间隔
 	MinRecTime time.Duration
 	// 最大重连时间间隔
 	MaxRecTime time.Duration
 	// 每次重连失败继续重连的时间间隔递增的乘数因子，递增到最大重连时间间隔为止
 	RecFactor float64
+}
 
+type WebSocket struct {
+	// 连接url
+	Url           string
+	Conn          *websocket.Conn
+	Dialer        *websocket.Dialer
+	RequestHeader http.Header
+	HttpResponse  *http.Response
 	// 是否已连接
-	IsConnected bool
+	isConnected bool
+	// 加锁避免重复关闭管道
+	connMu *sync.RWMutex
 	// 发送消息锁
 	sendMu *sync.Mutex
 }
 
-// 创建一个新的WebSocket客户端
-func New(url string) WebSocket {
-	return WebSocket{
-		Url:           url,
-		Dialer:        websocket.DefaultDialer,
-		RequestHeader: http.Header{},
-		MinRecTime:    2 * time.Second,
-		MaxRecTime:    60 * time.Second,
-		RecFactor:     1.5,
-		sendMu:        &sync.Mutex{},
+// 创建一个Wsc客户端
+func New(url string) *Wsc {
+	return &Wsc{
+		Config: &Config{
+			WriteWait:      10 * time.Second,
+			MaxMessageSize: 512,
+			MinRecTime:     2 * time.Second,
+			MaxRecTime:     60 * time.Second,
+			RecFactor:      1.5,
+		},
+		WebSocket: &WebSocket{
+			Url:           url,
+			Dialer:        websocket.DefaultDialer,
+			RequestHeader: http.Header{},
+			isConnected:   false,
+			connMu:        &sync.RWMutex{},
+			sendMu:        &sync.Mutex{},
+		},
 	}
 }
 
-// 连接
-func (ws *WebSocket) Connect() {
+// 返回关闭状态
+func (wsc *Wsc) Closed() bool {
+	wsc.WebSocket.connMu.RLock()
+	defer wsc.WebSocket.connMu.RUnlock()
+	return !wsc.WebSocket.isConnected
+}
+
+// 发起连接
+func (wsc *Wsc) Connect() {
 	b := &backoff.Backoff{
-		Min:    ws.MinRecTime,
-		Max:    ws.MaxRecTime,
-		Factor: ws.RecFactor,
+		Min:    wsc.Config.MinRecTime,
+		Max:    wsc.Config.MaxRecTime,
+		Factor: wsc.Config.RecFactor,
 		Jitter: true,
 	}
 	rand.Seed(time.Now().UTC().UnixNano())
 	for {
 		var err error
 		nextRec := b.Duration()
-		ws.Conn, ws.HttpResponse, err = ws.Dialer.Dial(ws.Url, ws.RequestHeader)
+		wsc.WebSocket.Conn, wsc.WebSocket.HttpResponse, err =
+			wsc.WebSocket.Dialer.Dial(wsc.WebSocket.Url, wsc.WebSocket.RequestHeader)
 		if err != nil {
-			ws.IsConnected = false
-			if ws.OnConnectError != nil {
-				ws.OnConnectError(err, *ws)
+			if wsc.OnConnectError != nil {
+				wsc.OnConnectError(err)
 			}
 			// 重试
 			time.Sleep(nextRec)
 			continue
 		}
-		ws.IsConnected = true
-		if ws.OnConnected != nil {
-			ws.OnConnected(*ws)
+		// 变更连接状态
+		wsc.WebSocket.connMu.Lock()
+		wsc.WebSocket.isConnected = true
+		wsc.WebSocket.connMu.Unlock()
+		// 连接成功回调
+		if wsc.OnConnected != nil {
+			wsc.OnConnected()
 		}
-		defaultCloseHandler := ws.Conn.CloseHandler()
-		ws.Conn.SetCloseHandler(func(code int, text string) error {
+		// 连接关闭回调
+		defaultCloseHandler := wsc.WebSocket.Conn.CloseHandler()
+		wsc.WebSocket.Conn.SetCloseHandler(func(code int, text string) error {
 			result := defaultCloseHandler(code, text)
-			ws.IsConnected = false
-			if ws.OnClose != nil {
-				ws.OnClose(code, text, *ws)
+			wsc.Close()
+			if wsc.OnClose != nil {
+				wsc.OnClose(code, text)
 			}
 			return result
 		})
-		defaultPingHandler := ws.Conn.PingHandler()
-		ws.Conn.SetPingHandler(func(appData string) error {
-			if ws.OnPingReceived != nil {
-				ws.OnPingReceived(appData, *ws)
+		// 收到ping回调
+		defaultPingHandler := wsc.WebSocket.Conn.PingHandler()
+		wsc.WebSocket.Conn.SetPingHandler(func(appData string) error {
+			if wsc.OnPingReceived != nil {
+				wsc.OnPingReceived(appData)
 			}
 			return defaultPingHandler(appData)
 		})
-		defaultPongHandler := ws.Conn.PongHandler()
-		ws.Conn.SetPongHandler(func(appData string) error {
-			if ws.OnPongReceived != nil {
-				ws.OnPongReceived(appData, *ws)
+		// 收到pong回调
+		defaultPongHandler := wsc.WebSocket.Conn.PongHandler()
+		wsc.WebSocket.Conn.SetPongHandler(func(appData string) error {
+			if wsc.OnPongReceived != nil {
+				wsc.OnPongReceived(appData)
 			}
 			return defaultPongHandler(appData)
 		})
+		// 开启协程读
 		go func() {
 			for {
-				messageType, message, err := ws.Conn.ReadMessage()
+				messageType, message, err := wsc.WebSocket.Conn.ReadMessage()
 				if err != nil {
-					ws.IsConnected = false
-					if ws.OnDisconnected != nil {
-						ws.OnDisconnected(err, *ws)
+					// 异常断线重连
+					if wsc.OnDisconnected != nil {
+						wsc.OnDisconnected(err)
 					}
-					ws.closeAndRecConn()
+					wsc.closeAndRecConn()
 					return
 				}
 				switch messageType {
+				// 收到TextMessage回调
 				case websocket.TextMessage:
-					if ws.OnTextMessage != nil {
-						ws.OnTextMessage(string(message), *ws)
+					if wsc.OnTextMessageReceived != nil {
+						wsc.OnTextMessageReceived(string(message))
 					}
+				// 收到BinaryMessage回调
 				case websocket.BinaryMessage:
-					if ws.OnBinaryMessage != nil {
-						ws.OnBinaryMessage(message, *ws)
+					if wsc.OnBinaryMessageReceived != nil {
+						wsc.OnBinaryMessageReceived(message)
 					}
 				}
 			}
@@ -137,57 +181,63 @@ func (ws *WebSocket) Connect() {
 	}
 }
 
-func (ws *WebSocket) SendTextMessage(message string) {
-	err := ws.send(websocket.TextMessage, []byte(message))
-	if err != nil {
+var closeErr = errors.New("connection closed")
+
+// 发送TextMessage消息
+func (wsc *Wsc) SendTextMessage(message string) error {
+	if wsc.Closed() {
+		return closeErr
 	}
+	return wsc.send(websocket.TextMessage, []byte(message))
 }
 
-func (ws *WebSocket) SendBinaryMessage(data []byte) {
-	err := ws.send(websocket.BinaryMessage, data)
-	if err != nil {
+// 发送BinaryMessage消息
+func (wsc *Wsc) SendBinaryMessage(data []byte) error {
+	if wsc.Closed() {
+		return closeErr
 	}
+	return wsc.send(websocket.BinaryMessage, data)
 }
 
-func (ws *WebSocket) send(messageType int, data []byte) error {
+// 发送消息到连接端
+func (wsc *Wsc) send(messageType int, data []byte) error {
 	var err error
-	ws.sendMu.Lock()
-	if ws.Conn != nil && ws.IsConnected {
-		err = ws.Conn.WriteMessage(messageType, data)
-	}
-	ws.sendMu.Unlock()
+	wsc.WebSocket.sendMu.Lock()
+	err = wsc.WebSocket.Conn.WriteMessage(messageType, data)
+	wsc.WebSocket.sendMu.Unlock()
 	return err
 }
 
 // 断线重连
-func (ws *WebSocket) closeAndRecConn() {
-	if ws.Conn != nil {
-		ws.Conn.Close()
+func (wsc *Wsc) closeAndRecConn() {
+	if wsc.Closed() {
+		return
 	}
+	wsc.WebSocket.connMu.Lock()
+	defer wsc.WebSocket.connMu.Unlock()
+	wsc.WebSocket.isConnected = false
+	wsc.WebSocket.Conn.Close()
 	go func() {
-		ws.Connect()
+		wsc.Connect()
 	}()
 }
 
 // 主动关闭连接
-func (ws *WebSocket) Close() {
-	if ws.Conn != nil {
-		ws.send(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-		ws.Conn.Close()
-		ws.IsConnected = false
-		if ws.OnClose != nil {
-			ws.OnClose(websocket.CloseNormalClosure, "", *ws)
-		}
-	}
+func (wsc *Wsc) Close() {
+	wsc.CloseWithMsg("")
 }
 
-func (ws *WebSocket) CloseWithMsg(msg string) {
-	if ws.Conn != nil {
-		ws.send(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, msg))
-		ws.Conn.Close()
-		ws.IsConnected = false
-		if ws.OnClose != nil {
-			ws.OnClose(websocket.CloseNormalClosure, msg, *ws)
-		}
+// 主动关闭连接，附带消息
+func (wsc *Wsc) CloseWithMsg(msg string) {
+	if wsc.Closed() {
+		return
+	}
+	wsc.WebSocket.connMu.Lock()
+	defer wsc.WebSocket.connMu.Unlock()
+	wsc.send(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, msg))
+	wsc.WebSocket.isConnected = false
+	wsc.WebSocket.Conn.Close()
+	if wsc.OnClose != nil {
+		wsc.OnClose(websocket.CloseNormalClosure, msg)
 	}
 }
