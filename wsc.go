@@ -53,7 +53,7 @@ type Config struct {
 	MaxRecTime time.Duration
 	// 每次重连失败继续重连的时间间隔递增的乘数因子，递增到最大重连时间间隔为止
 	RecFactor float64
-	// 消息发送缓冲池大小
+	// 消息发送缓冲池大小，默认256
 	MessageBufferSize int
 }
 
@@ -88,7 +88,7 @@ func New(url string) *Wsc {
 			MinRecTime:        2 * time.Second,
 			MaxRecTime:        60 * time.Second,
 			RecFactor:         1.5,
-			MessageBufferSize: 1024,
+			MessageBufferSize: 256,
 		},
 		WebSocket: &WebSocket{
 			Url:           url,
