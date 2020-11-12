@@ -217,12 +217,15 @@ func (wsc *Wsc) SendBinaryMessage(data []byte) error {
 
 // 发送消息到连接端
 func (wsc *Wsc) send(messageType int, data []byte) error {
-	var err error
 	wsc.WebSocket.sendMu.Lock()
+	defer wsc.WebSocket.sendMu.Unlock()
+	if wsc.Closed() {
+		return CloseErr
+	}
+	var err error
 	// 超时时间
 	wsc.WebSocket.Conn.SetWriteDeadline(time.Now().Add(wsc.Config.WriteWait))
 	err = wsc.WebSocket.Conn.WriteMessage(messageType, data)
-	wsc.WebSocket.sendMu.Unlock()
 	return err
 }
 
@@ -232,9 +235,9 @@ func (wsc *Wsc) closeAndRecConn() {
 		return
 	}
 	wsc.WebSocket.connMu.Lock()
-	defer wsc.WebSocket.connMu.Unlock()
 	wsc.WebSocket.isConnected = false
 	wsc.WebSocket.Conn.Close()
+	wsc.WebSocket.connMu.Unlock()
 	go func() {
 		wsc.Connect()
 	}()
@@ -250,11 +253,11 @@ func (wsc *Wsc) CloseWithMsg(msg string) {
 	if wsc.Closed() {
 		return
 	}
+	go wsc.send(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, msg))
 	wsc.WebSocket.connMu.Lock()
-	defer wsc.WebSocket.connMu.Unlock()
-	wsc.send(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, msg))
 	wsc.WebSocket.isConnected = false
 	wsc.WebSocket.Conn.Close()
+	wsc.WebSocket.connMu.Unlock()
 	if wsc.OnClose != nil {
 		wsc.OnClose(websocket.CloseNormalClosure, msg)
 	}
