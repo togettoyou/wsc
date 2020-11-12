@@ -29,6 +29,9 @@ type Wsc struct {
 	// 发送Binary消息成功回调
 	OnBinaryMessageSent func(data []byte)
 
+	// 发送消息异常回调
+	OnSentError func(err error)
+
 	// 接受到Ping消息回调
 	OnPingReceived func(appData string)
 	// 接受到Pong消息回调
@@ -50,6 +53,8 @@ type Config struct {
 	MaxRecTime time.Duration
 	// 每次重连失败继续重连的时间间隔递增的乘数因子，递增到最大重连时间间隔为止
 	RecFactor float64
+	// 消息发送缓冲池大小
+	MessageBufferSize int
 }
 
 type WebSocket struct {
@@ -65,17 +70,25 @@ type WebSocket struct {
 	connMu *sync.RWMutex
 	// 发送消息锁
 	sendMu *sync.Mutex
+	// 发送消息缓冲池
+	sendChan chan *wsMsg
+}
+
+type wsMsg struct {
+	t   int
+	msg []byte
 }
 
 // 创建一个Wsc客户端
 func New(url string) *Wsc {
 	return &Wsc{
 		Config: &Config{
-			WriteWait:      10 * time.Second,
-			MaxMessageSize: 512,
-			MinRecTime:     2 * time.Second,
-			MaxRecTime:     60 * time.Second,
-			RecFactor:      1.5,
+			WriteWait:         10 * time.Second,
+			MaxMessageSize:    512,
+			MinRecTime:        2 * time.Second,
+			MaxRecTime:        60 * time.Second,
+			RecFactor:         1.5,
+			MessageBufferSize: 1024,
 		},
 		WebSocket: &WebSocket{
 			Url:           url,
@@ -97,6 +110,7 @@ func (wsc *Wsc) Closed() bool {
 
 // 发起连接
 func (wsc *Wsc) Connect() {
+	wsc.WebSocket.sendChan = make(chan *wsMsg, wsc.Config.MessageBufferSize) // 缓冲
 	b := &backoff.Backoff{
 		Min:    wsc.Config.MinRecTime,
 		Max:    wsc.Config.MaxRecTime,
@@ -171,10 +185,44 @@ func (wsc *Wsc) Connect() {
 					if wsc.OnTextMessageReceived != nil {
 						wsc.OnTextMessageReceived(string(message))
 					}
+					break
 				// 收到BinaryMessage回调
 				case websocket.BinaryMessage:
 					if wsc.OnBinaryMessageReceived != nil {
 						wsc.OnBinaryMessageReceived(message)
+					}
+					break
+				}
+			}
+		}()
+		// 开启协程写
+		go func() {
+			for {
+				select {
+				case wsMsg, ok := <-wsc.WebSocket.sendChan:
+					if !ok {
+						return
+					}
+					err := wsc.send(wsMsg.t, wsMsg.msg)
+					if err != nil {
+						if wsc.OnSentError != nil {
+							wsc.OnSentError(err)
+						}
+						continue
+					}
+					switch wsMsg.t {
+					case websocket.CloseMessage:
+						return
+					case websocket.TextMessage:
+						if wsc.OnTextMessageSent != nil {
+							wsc.OnTextMessageSent(string(wsMsg.msg))
+						}
+						break
+					case websocket.BinaryMessage:
+						if wsc.OnBinaryMessageSent != nil {
+							wsc.OnBinaryMessageSent(wsMsg.msg)
+						}
+						break
 					}
 				}
 			}
@@ -185,17 +233,23 @@ func (wsc *Wsc) Connect() {
 
 var CloseErr = errors.New("connection closed")
 
+var BufferErr = errors.New("message buffer is full")
+
 // 发送TextMessage消息
 func (wsc *Wsc) SendTextMessage(message string) error {
 	if wsc.Closed() {
 		return CloseErr
 	}
-	err := wsc.send(websocket.TextMessage, []byte(message))
-	if err != nil {
-		return err
-	}
-	if wsc.OnTextMessageSent != nil {
-		wsc.OnTextMessageSent(message)
+	// 丢入缓冲池处理
+	select {
+	case wsc.WebSocket.sendChan <- &wsMsg{
+		t:   websocket.TextMessage,
+		msg: []byte(message),
+	}:
+	default:
+		if wsc.OnSentError != nil {
+			wsc.OnSentError(BufferErr)
+		}
 	}
 	return nil
 }
@@ -205,12 +259,16 @@ func (wsc *Wsc) SendBinaryMessage(data []byte) error {
 	if wsc.Closed() {
 		return CloseErr
 	}
-	err := wsc.send(websocket.BinaryMessage, data)
-	if err != nil {
-		return err
-	}
-	if wsc.OnBinaryMessageSent != nil {
-		wsc.OnBinaryMessageSent(data)
+	// 丢入缓冲池处理
+	select {
+	case wsc.WebSocket.sendChan <- &wsMsg{
+		t:   websocket.BinaryMessage,
+		msg: data,
+	}:
+	default:
+		if wsc.OnSentError != nil {
+			wsc.OnSentError(BufferErr)
+		}
 	}
 	return nil
 }
@@ -237,6 +295,7 @@ func (wsc *Wsc) closeAndRecConn() {
 	wsc.WebSocket.connMu.Lock()
 	wsc.WebSocket.isConnected = false
 	wsc.WebSocket.Conn.Close()
+	close(wsc.WebSocket.sendChan)
 	wsc.WebSocket.connMu.Unlock()
 	go func() {
 		wsc.Connect()
@@ -257,6 +316,7 @@ func (wsc *Wsc) CloseWithMsg(msg string) {
 	wsc.WebSocket.connMu.Lock()
 	wsc.WebSocket.isConnected = false
 	wsc.WebSocket.Conn.Close()
+	close(wsc.WebSocket.sendChan)
 	wsc.WebSocket.connMu.Unlock()
 	if wsc.OnClose != nil {
 		wsc.OnClose(websocket.CloseNormalClosure, msg)
