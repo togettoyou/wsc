@@ -141,11 +141,11 @@ func (wsc *Wsc) Connect() {
 		}
 		// 设置支持接受的消息最大长度
 		wsc.WebSocket.Conn.SetReadLimit(wsc.Config.MaxMessageSize)
-		// 连接关闭回调
+		// 收到连接关闭信号回调
 		defaultCloseHandler := wsc.WebSocket.Conn.CloseHandler()
 		wsc.WebSocket.Conn.SetCloseHandler(func(code int, text string) error {
 			result := defaultCloseHandler(code, text)
-			wsc.Close()
+			wsc.clean()
 			if wsc.OnClose != nil {
 				wsc.OnClose(code, text)
 			}
@@ -247,9 +247,7 @@ func (wsc *Wsc) SendTextMessage(message string) error {
 		msg: []byte(message),
 	}:
 	default:
-		if wsc.OnSentError != nil {
-			wsc.OnSentError(BufferErr)
-		}
+		return BufferErr
 	}
 	return nil
 }
@@ -266,9 +264,7 @@ func (wsc *Wsc) SendBinaryMessage(data []byte) error {
 		msg: data,
 	}:
 	default:
-		if wsc.OnSentError != nil {
-			wsc.OnSentError(BufferErr)
-		}
+		return BufferErr
 	}
 	return nil
 }
@@ -292,14 +288,8 @@ func (wsc *Wsc) closeAndRecConn() {
 	if wsc.Closed() {
 		return
 	}
-	wsc.WebSocket.connMu.Lock()
-	wsc.WebSocket.isConnected = false
-	wsc.WebSocket.Conn.Close()
-	close(wsc.WebSocket.sendChan)
-	wsc.WebSocket.connMu.Unlock()
-	go func() {
-		wsc.Connect()
-	}()
+	wsc.clean()
+	go wsc.Connect()
 }
 
 // 主动关闭连接
@@ -312,13 +302,21 @@ func (wsc *Wsc) CloseWithMsg(msg string) {
 	if wsc.Closed() {
 		return
 	}
-	go wsc.send(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, msg))
+	wsc.send(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, msg))
+	wsc.clean()
+	if wsc.OnClose != nil {
+		wsc.OnClose(websocket.CloseNormalClosure, msg)
+	}
+}
+
+// 清理资源
+func (wsc *Wsc) clean() {
+	if wsc.Closed() {
+		return
+	}
 	wsc.WebSocket.connMu.Lock()
 	wsc.WebSocket.isConnected = false
 	wsc.WebSocket.Conn.Close()
 	close(wsc.WebSocket.sendChan)
 	wsc.WebSocket.connMu.Unlock()
-	if wsc.OnClose != nil {
-		wsc.OnClose(websocket.CloseNormalClosure, msg)
-	}
 }
