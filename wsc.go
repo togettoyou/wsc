@@ -16,30 +16,30 @@ type Wsc struct {
 	// 底层WebSocket
 	WebSocket *WebSocket
 	// 连接成功回调
-	OnConnected func()
+	onConnected func()
 	// 连接异常回调，在准备进行连接的过程中发生异常时触发
-	OnConnectError func(err error)
+	onConnectError func(err error)
 	// 连接断开回调，网络异常，服务端掉线等情况时触发
-	OnDisconnected func(err error)
+	onDisconnected func(err error)
 	// 连接关闭回调，服务端发起关闭信号或客户端主动关闭时触发
-	OnClose func(code int, text string)
+	onClose func(code int, text string)
 
 	// 发送Text消息成功回调
-	OnTextMessageSent func(message string)
+	onTextMessageSent func(message string)
 	// 发送Binary消息成功回调
-	OnBinaryMessageSent func(data []byte)
+	onBinaryMessageSent func(data []byte)
 
 	// 发送消息异常回调
-	OnSentError func(err error)
+	onSentError func(err error)
 
 	// 接受到Ping消息回调
-	OnPingReceived func(appData string)
+	onPingReceived func(appData string)
 	// 接受到Pong消息回调
-	OnPongReceived func(appData string)
+	onPongReceived func(appData string)
 	// 接受到Text消息回调
-	OnTextMessageReceived func(message string)
+	onTextMessageReceived func(message string)
 	// 接受到Binary消息回调
-	OnBinaryMessageReceived func(data []byte)
+	onBinaryMessageReceived func(data []byte)
 }
 
 type Config struct {
@@ -101,6 +101,54 @@ func New(url string) *Wsc {
 	}
 }
 
+func (wsc *Wsc) SetConfig(config *Config) {
+	wsc.Config = config
+}
+
+func (wsc *Wsc) OnConnected(f func()) {
+	wsc.onConnected = f
+}
+
+func (wsc *Wsc) OnConnectError(f func(err error)) {
+	wsc.onConnectError = f
+}
+
+func (wsc *Wsc) OnDisconnected(f func(err error)) {
+	wsc.onDisconnected = f
+}
+
+func (wsc *Wsc) OnClose(f func(code int, text string)) {
+	wsc.onClose = f
+}
+
+func (wsc *Wsc) OnTextMessageSent(f func(message string)) {
+	wsc.onTextMessageSent = f
+}
+
+func (wsc *Wsc) OnBinaryMessageSent(f func(data []byte)) {
+	wsc.onBinaryMessageSent = f
+}
+
+func (wsc *Wsc) OnSentError(f func(err error)) {
+	wsc.onSentError = f
+}
+
+func (wsc *Wsc) OnPingReceived(f func(appData string)) {
+	wsc.onPingReceived = f
+}
+
+func (wsc *Wsc) OnPongReceived(f func(appData string)) {
+	wsc.onPongReceived = f
+}
+
+func (wsc *Wsc) OnTextMessageReceived(f func(message string)) {
+	wsc.onTextMessageReceived = f
+}
+
+func (wsc *Wsc) OnBinaryMessageReceived(f func(data []byte)) {
+	wsc.onBinaryMessageReceived = f
+}
+
 // 返回关闭状态
 func (wsc *Wsc) Closed() bool {
 	wsc.WebSocket.connMu.RLock()
@@ -124,8 +172,8 @@ func (wsc *Wsc) Connect() {
 		wsc.WebSocket.Conn, wsc.WebSocket.HttpResponse, err =
 			wsc.WebSocket.Dialer.Dial(wsc.WebSocket.Url, wsc.WebSocket.RequestHeader)
 		if err != nil {
-			if wsc.OnConnectError != nil {
-				wsc.OnConnectError(err)
+			if wsc.onConnectError != nil {
+				wsc.onConnectError(err)
 			}
 			// 重试
 			time.Sleep(nextRec)
@@ -136,8 +184,8 @@ func (wsc *Wsc) Connect() {
 		wsc.WebSocket.isConnected = true
 		wsc.WebSocket.connMu.Unlock()
 		// 连接成功回调
-		if wsc.OnConnected != nil {
-			wsc.OnConnected()
+		if wsc.onConnected != nil {
+			wsc.onConnected()
 		}
 		// 设置支持接受的消息最大长度
 		wsc.WebSocket.Conn.SetReadLimit(wsc.Config.MaxMessageSize)
@@ -146,24 +194,24 @@ func (wsc *Wsc) Connect() {
 		wsc.WebSocket.Conn.SetCloseHandler(func(code int, text string) error {
 			result := defaultCloseHandler(code, text)
 			wsc.clean()
-			if wsc.OnClose != nil {
-				wsc.OnClose(code, text)
+			if wsc.onClose != nil {
+				wsc.onClose(code, text)
 			}
 			return result
 		})
 		// 收到ping回调
 		defaultPingHandler := wsc.WebSocket.Conn.PingHandler()
 		wsc.WebSocket.Conn.SetPingHandler(func(appData string) error {
-			if wsc.OnPingReceived != nil {
-				wsc.OnPingReceived(appData)
+			if wsc.onPingReceived != nil {
+				wsc.onPingReceived(appData)
 			}
 			return defaultPingHandler(appData)
 		})
 		// 收到pong回调
 		defaultPongHandler := wsc.WebSocket.Conn.PongHandler()
 		wsc.WebSocket.Conn.SetPongHandler(func(appData string) error {
-			if wsc.OnPongReceived != nil {
-				wsc.OnPongReceived(appData)
+			if wsc.onPongReceived != nil {
+				wsc.onPongReceived(appData)
 			}
 			return defaultPongHandler(appData)
 		})
@@ -173,8 +221,8 @@ func (wsc *Wsc) Connect() {
 				messageType, message, err := wsc.WebSocket.Conn.ReadMessage()
 				if err != nil {
 					// 异常断线重连
-					if wsc.OnDisconnected != nil {
-						wsc.OnDisconnected(err)
+					if wsc.onDisconnected != nil {
+						wsc.onDisconnected(err)
 					}
 					wsc.closeAndRecConn()
 					return
@@ -182,14 +230,14 @@ func (wsc *Wsc) Connect() {
 				switch messageType {
 				// 收到TextMessage回调
 				case websocket.TextMessage:
-					if wsc.OnTextMessageReceived != nil {
-						wsc.OnTextMessageReceived(string(message))
+					if wsc.onTextMessageReceived != nil {
+						wsc.onTextMessageReceived(string(message))
 					}
 					break
 				// 收到BinaryMessage回调
 				case websocket.BinaryMessage:
-					if wsc.OnBinaryMessageReceived != nil {
-						wsc.OnBinaryMessageReceived(message)
+					if wsc.onBinaryMessageReceived != nil {
+						wsc.onBinaryMessageReceived(message)
 					}
 					break
 				}
@@ -205,8 +253,8 @@ func (wsc *Wsc) Connect() {
 					}
 					err := wsc.send(wsMsg.t, wsMsg.msg)
 					if err != nil {
-						if wsc.OnSentError != nil {
-							wsc.OnSentError(err)
+						if wsc.onSentError != nil {
+							wsc.onSentError(err)
 						}
 						continue
 					}
@@ -214,13 +262,13 @@ func (wsc *Wsc) Connect() {
 					case websocket.CloseMessage:
 						return
 					case websocket.TextMessage:
-						if wsc.OnTextMessageSent != nil {
-							wsc.OnTextMessageSent(string(wsMsg.msg))
+						if wsc.onTextMessageSent != nil {
+							wsc.onTextMessageSent(string(wsMsg.msg))
 						}
 						break
 					case websocket.BinaryMessage:
-						if wsc.OnBinaryMessageSent != nil {
-							wsc.OnBinaryMessageSent(wsMsg.msg)
+						if wsc.onBinaryMessageSent != nil {
+							wsc.onBinaryMessageSent(wsMsg.msg)
 						}
 						break
 					}
@@ -231,16 +279,17 @@ func (wsc *Wsc) Connect() {
 	}
 }
 
-var CloseErr = errors.New("connection closed")
-
-var BufferErr = errors.New("message buffer is full")
+var (
+	CloseErr  = errors.New("connection closed")
+	BufferErr = errors.New("message buffer is full")
+)
 
 // 发送TextMessage消息
 func (wsc *Wsc) SendTextMessage(message string) error {
 	if wsc.Closed() {
 		return CloseErr
 	}
-	// 丢入缓冲池处理
+	// 丢入缓冲通道处理
 	select {
 	case wsc.WebSocket.sendChan <- &wsMsg{
 		t:   websocket.TextMessage,
@@ -257,7 +306,7 @@ func (wsc *Wsc) SendBinaryMessage(data []byte) error {
 	if wsc.Closed() {
 		return CloseErr
 	}
-	// 丢入缓冲池处理
+	// 丢入缓冲通道处理
 	select {
 	case wsc.WebSocket.sendChan <- &wsMsg{
 		t:   websocket.BinaryMessage,
@@ -278,7 +327,7 @@ func (wsc *Wsc) send(messageType int, data []byte) error {
 	}
 	var err error
 	// 超时时间
-	wsc.WebSocket.Conn.SetWriteDeadline(time.Now().Add(wsc.Config.WriteWait))
+	_ = wsc.WebSocket.Conn.SetWriteDeadline(time.Now().Add(wsc.Config.WriteWait))
 	err = wsc.WebSocket.Conn.WriteMessage(messageType, data)
 	return err
 }
@@ -302,10 +351,10 @@ func (wsc *Wsc) CloseWithMsg(msg string) {
 	if wsc.Closed() {
 		return
 	}
-	wsc.send(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, msg))
+	_ = wsc.send(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, msg))
 	wsc.clean()
-	if wsc.OnClose != nil {
-		wsc.OnClose(websocket.CloseNormalClosure, msg)
+	if wsc.onClose != nil {
+		wsc.onClose(websocket.CloseNormalClosure, msg)
 	}
 }
 
@@ -316,7 +365,7 @@ func (wsc *Wsc) clean() {
 	}
 	wsc.WebSocket.connMu.Lock()
 	wsc.WebSocket.isConnected = false
-	wsc.WebSocket.Conn.Close()
+	_ = wsc.WebSocket.Conn.Close()
 	close(wsc.WebSocket.sendChan)
 	wsc.WebSocket.connMu.Unlock()
 }
