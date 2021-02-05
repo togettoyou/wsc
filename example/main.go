@@ -9,16 +9,22 @@ import (
 func main() {
 	done := make(chan bool)
 	ws := wsc.New("ws://127.0.0.1:7777/ws")
-	// 自定义配置，不使用默认配置
-	ws.SetConfig(&wsc.Config{
-		WriteWait:         10 * time.Second,
-		MaxMessageSize:    2048,
-		MinRecTime:        2 * time.Second,
-		MaxRecTime:        60 * time.Second,
-		RecFactor:         1.5,
-		MessageBufferSize: 1024,
-	})
-	// 回调处理
+	// 可自定义配置，不使用默认配置
+	//ws.SetConfig(&wsc.Config{
+	//	// 写超时
+	//	WriteWait: 10 * time.Second,
+	//	// 支持接受的消息最大长度，默认512字节
+	//	MaxMessageSize: 2048,
+	//	// 最小重连时间间隔
+	//	MinRecTime: 2 * time.Second,
+	//	// 最大重连时间间隔
+	//	MaxRecTime: 60 * time.Second,
+	//	// 每次重连失败继续重连的时间间隔递增的乘数因子，递增到最大重连时间间隔为止
+	//	RecFactor: 1.5,
+	//	// 消息发送缓冲池大小，默认256
+	//	MessageBufferSize: 1024,
+	//})
+	// 设置回调处理
 	ws.OnConnected(func() {
 		log.Println("OnConnected: ", ws.WebSocket.Url)
 		// 连接成功后，测试每5秒发送消息
